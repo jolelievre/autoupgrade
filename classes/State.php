@@ -27,57 +27,79 @@
 
 namespace PrestaShop\Module\AutoUpgrade;
 
+use InvalidArgumentException;
+use PrestaShop\Module\AutoUpgrade\Backup\BackupFinder;
+
 /**
  * Class storing the temporary data to keep between 2 ajax requests.
  */
 class State
 {
+    /**
+     * @var string
+     */
+    private $originVersion; // Origin version of PrestaShop
+    /**
+     * @var ?string
+     */
     private $install_version; // Destination version of PrestaShop
+    /**
+     * @var string
+     */
     private $backupName;
+    /**
+     * @var string
+     */
     private $backupFilesFilename;
+    /**
+     * @var string
+     */
     private $backupDbFilename;
+    /**
+     * @var string
+     */
     private $restoreName;
+    /**
+     * @var string
+     */
     private $restoreFilesFilename;
+    /**
+     * @var string[]
+     */
     private $restoreDbFilenames = [];
 
     // STEP BackupDb
+    /**
+     * @var string[]
+     */
     private $backup_lines;
+    /**
+     * @var int
+     */
     private $backup_loop_limit;
+    /**
+     * @var string
+     */
     private $backup_table;
 
     /**
      * Int during BackupDb, allowing the script to increent the number of different file names
      * String during step RestoreDb, which contains the file to process (Data coming from toRestoreQueryList).
      *
-     * @var string|int Contains the SQL progress
+     * @var int Contains the SQL progress
      */
     private $dbStep = 0;
 
     /**
-     * Data filled in upgrade warmup, to avoid risky tasks during the process.
-     *
-     * @var array|null File containing sample files to be deleted
-     */
-    private $removeList;
-    /**
-     * @var string|null File containing files to be upgraded
-     */
-    private $fileToUpgrade;
-    /**
-     * @var string|null File containing modules to be upgraded
-     */
-    private $modulesToUpgrade;
-
-    /**
      * installedLanguagesIso is an array of iso_code of each installed languages.
      *
-     * @var array
+     * @var string[]
      */
     private $installedLanguagesIso = [];
     /**
      * modules_addons is an array of array(id_addons => name_module).
      *
-     * @var array
+     * @var array<string, string>
      */
     private $modules_addons = [];
     /**
@@ -92,10 +114,16 @@ class State
      */
     private $warning_exists = false;
 
+    /** @var int */
+    private $progressPercentage;
+
+    /** @var ?string */
+    private $processTimestamp;
+
     /**
-     * @param array $savedState from another request
+     * @param array<string, mixed> $savedState from another request
      */
-    public function importFromArray(array $savedState)
+    public function importFromArray(array $savedState): State
     {
         foreach ($savedState as $name => $value) {
             if (!empty($value) && property_exists($this, $name)) {
@@ -106,10 +134,7 @@ class State
         return $this;
     }
 
-    /**
-     * @param string $encodedData
-     */
-    public function importFromEncodedData($encodedData)
+    public function importFromEncodedData(string $encodedData): State
     {
         $decodedData = json_decode(base64_decode($encodedData), true);
         if (empty($decodedData['nextParams'])) {
@@ -120,34 +145,15 @@ class State
     }
 
     /**
-     * @return array of class properties for export
+     * @return array<string, mixed> of class properties for export
      */
-    public function export()
+    public function export(): array
     {
         return get_object_vars($this);
     }
 
-    public function initDefault(Upgrader $upgrader, $prodRootDir, $version)
+    public function initDefault(string $version): void
     {
-        $postData = http_build_query([
-            'action' => 'native',
-            'iso_code' => 'all',
-            'method' => 'listing',
-            'version' => $this->getInstallVersion(),
-        ]);
-        $xml_local = $prodRootDir . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'xml' . DIRECTORY_SEPARATOR . 'modules_native_addons.xml';
-        $xml = $upgrader->getApiAddons($xml_local, $postData, true);
-
-        $modules_addons = $modules_versions = [];
-        if (is_object($xml)) {
-            foreach ($xml as $mod) {
-                $modules_addons[(string) $mod->id] = (string) $mod->name;
-                $modules_versions[(string) $mod->id] = (string) $mod->version;
-            }
-        }
-        $this->setModulesAddons($modules_addons);
-        $this->setModulesVersions($modules_versions);
-
         // installedLanguagesIso is used to merge translations files
         $installedLanguagesIso = array_map(
             function ($v) { return $v['iso_code']; },
@@ -164,186 +170,207 @@ class State
     }
 
     // GETTERS
-    public function getInstallVersion()
+    public function getOriginVersion(): string
+    {
+        return $this->originVersion;
+    }
+
+    public function getInstallVersion(): ?string
     {
         return $this->install_version;
     }
 
-    public function getBackupName()
+    public function getBackupName(): string
     {
         return $this->backupName;
     }
 
-    public function getBackupFilesFilename()
+    public function getBackupFilesFilename(): string
     {
         return $this->backupFilesFilename;
     }
 
-    public function getBackupDbFilename()
+    public function getBackupDbFilename(): string
     {
         return $this->backupDbFilename;
     }
 
-    public function getBackupLines()
+    /**
+     * @return string[]|null
+     */
+    public function getBackupLines(): ?array
     {
         return $this->backup_lines;
     }
 
-    public function getBackupLoopLimit()
+    public function getBackupLoopLimit(): ?int
     {
         return $this->backup_loop_limit;
     }
 
-    public function getBackupTable()
+    public function getBackupTable(): ?string
     {
         return $this->backup_table;
     }
 
-    public function getDbStep()
+    public function getDbStep(): int
     {
         return $this->dbStep;
     }
 
-    public function getRemoveList()
-    {
-        return $this->removeList;
-    }
-
-    public function getRestoreName()
+    public function getRestoreName(): string
     {
         return $this->restoreName;
     }
 
-    public function getRestoreFilesFilename()
+    public function getRestoreFilesFilename(): ?string
     {
         return $this->restoreFilesFilename;
     }
 
-    public function getRestoreDbFilenames()
+    /**
+     * @return string[]
+     */
+    public function getRestoreDbFilenames(): array
     {
         return $this->restoreDbFilenames;
     }
 
-    public function getInstalledLanguagesIso()
+    /** @return string[] */
+    public function getInstalledLanguagesIso(): array
     {
         return $this->installedLanguagesIso;
     }
 
-    public function getModules_addons()
-    {
-        return $this->modules_addons;
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    public function getModulesVersions()
-    {
-        return $this->modules_versions;
-    }
-
-    public function getWarningExists()
+    public function getWarningExists(): bool
     {
         return $this->warning_exists;
     }
 
+    public function getProgressPercentage(): ?int
+    {
+        return $this->progressPercentage;
+    }
+
+    public function getProcessTimestamp(): ?string
+    {
+        return $this->processTimestamp;
+    }
+
     // SETTERS
-    public function setInstallVersion($install_version)
+    public function setOriginVersion(string $originVersion): State
+    {
+        $this->originVersion = $originVersion;
+
+        return $this;
+    }
+
+    public function setInstallVersion(?string $install_version): State
     {
         $this->install_version = $install_version;
 
         return $this;
     }
 
-    public function setBackupName($backupName)
+    public function setBackupName(string $backupName): State
     {
         $this->backupName = $backupName;
-        $this->setBackupFilesFilename('auto-backupfiles_' . $backupName . '.zip')
-            ->setBackupDbFilename('auto-backupdb_XXXXXX_' . $backupName . '.sql');
+        $this->setBackupFilesFilename(BackupFinder::BACKUP_ZIP_NAME_PREFIX . $backupName . '.zip')
+            ->setBackupDbFilename(BackupFinder::BACKUP_DB_FOLDER_NAME_PREFIX . 'XXXXXX_' . $backupName . '.sql');
 
         return $this;
     }
 
-    public function setBackupFilesFilename($backupFilesFilename)
+    public function setBackupFilesFilename(string $backupFilesFilename): State
     {
         $this->backupFilesFilename = $backupFilesFilename;
 
         return $this;
     }
 
-    public function setBackupDbFilename($backupDbFilename)
+    public function setBackupDbFilename(string $backupDbFilename): State
     {
         $this->backupDbFilename = $backupDbFilename;
 
         return $this;
     }
 
-    public function setBackupLines($backup_lines)
+    /**
+     * @param string[]|null $backup_lines
+     */
+    public function setBackupLines(?array $backup_lines): State
     {
         $this->backup_lines = $backup_lines;
 
         return $this;
     }
 
-    public function setBackupLoopLimit($backup_loop_limit)
+    public function setBackupLoopLimit(?int $backup_loop_limit): State
     {
         $this->backup_loop_limit = $backup_loop_limit;
 
         return $this;
     }
 
-    public function setBackupTable($backup_table)
+    public function setBackupTable(?string $backup_table): State
     {
         $this->backup_table = $backup_table;
 
         return $this;
     }
 
-    public function setDbStep($dbStep)
+    public function setDbStep(int $dbStep): State
     {
         $this->dbStep = $dbStep;
 
         return $this;
     }
 
-    public function setRemoveList($removeList)
-    {
-        $this->removeList = $removeList;
-
-        return $this;
-    }
-
-    public function setRestoreName($restoreName)
+    public function setRestoreName(string $restoreName): State
     {
         $this->restoreName = $restoreName;
 
         return $this;
     }
 
-    public function setRestoreFilesFilename($restoreFilesFilename)
+    public function setRestoreFilesFilename(string $restoreFilesFilename): State
     {
         $this->restoreFilesFilename = $restoreFilesFilename;
 
         return $this;
     }
 
-    public function setRestoreDbFilenames($restoreDbFilenames)
+    /**
+     * @param string[] $restoreDbFilenames
+     */
+    public function setRestoreDbFilenames(array $restoreDbFilenames): State
     {
         $this->restoreDbFilenames = $restoreDbFilenames;
 
         return $this;
     }
 
-    public function setInstalledLanguagesIso($installedLanguagesIso)
+    /**
+     * Pick version from restoration file name in the format v[version]_[date]-[time]-[random]
+     */
+    public function getRestoreVersion(): ?string
     {
-        $this->installedLanguagesIso = $installedLanguagesIso;
+        $matches = [];
+        preg_match(
+            '/^V(?<version>[1-9\.]+)_/',
+            $this->getRestoreName(),
+            $matches
+        );
 
-        return $this;
+        return $matches[1] ?? null;
     }
 
-    public function setModulesAddons($modules_addons)
+    /**
+     * @param string[] $installedLanguagesIso
+     */
+    public function setInstalledLanguagesIso(array $installedLanguagesIso): State
     {
-        $this->modules_addons = $modules_addons;
+        $this->installedLanguagesIso = $installedLanguagesIso;
 
         return $this;
     }
@@ -353,17 +380,33 @@ class State
      *
      * @return self
      */
-    public function setModulesVersions($modules_versions)
+    public function setModulesVersions(array $modules_versions): State
     {
         $this->modules_versions = $modules_versions;
 
         return $this;
     }
 
-    public function setWarningExists($warning_exists)
+    public function setWarningExists(bool $warning_exists): State
     {
         $this->warning_exists = $warning_exists;
 
         return $this;
+    }
+
+    public function setProgressPercentage(int $progressPercentage): State
+    {
+        if ($progressPercentage < $this->progressPercentage) {
+            throw new InvalidArgumentException('Updated progress percentage cannot be lower than the currently set one.');
+        }
+
+        $this->progressPercentage = $progressPercentage;
+
+        return $this;
+    }
+
+    public function setProcessTimestamp(string $processTimestamp): void
+    {
+        $this->processTimestamp = $processTimestamp;
     }
 }

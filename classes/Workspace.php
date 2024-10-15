@@ -27,40 +27,38 @@
 
 namespace PrestaShop\Module\AutoUpgrade;
 
-use PrestaShop\Module\AutoUpgrade\Log\LoggerInterface;
+use Exception;
+use PrestaShop\Module\AutoUpgrade\UpgradeTools\Translator;
 
 class Workspace
 {
     /**
-     * @var LoggerInterface
-     */
-    private $logger;
-
-    /**
-     * @var UpgradeTools\Translator
+     * @var Translator
      */
     private $translator;
 
     /**
-     * @var array List of paths used by autoupgrade
+     * @var string[] List of paths used by autoupgrade
      */
     private $paths;
 
-    public function __construct(LoggerInterface $logger, $translator, array $paths)
+    /**
+     * @param string[] $paths
+     */
+    public function __construct(Translator $translator, array $paths)
     {
-        $this->logger = $logger;
         $this->translator = $translator;
         $this->paths = $paths;
     }
 
-    public function createFolders()
+    public function createFolders(): void
     {
         foreach ($this->paths as $path) {
-            if (!file_exists($path) && !mkdir($path)) {
-                $this->logger->error($this->translator->trans('Unable to create directory %s', [$path], 'Modules.Autoupgrade.Admin'));
+            if (!file_exists($path) && !@mkdir($path)) {
+                throw new Exception($this->translator->trans('Unable to create directory %s', [$path]));
             }
             if (!is_writable($path)) {
-                $this->logger->error($this->translator->trans('Unable to write in the directory "%s"', [$path], 'Modules.Autoupgrade.Admin'));
+                throw new Exception($this->translator->trans('Cannot write to the directory. Please ensure you have the necessary write permissions on "%s".', [$path]));
             }
         }
     }

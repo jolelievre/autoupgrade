@@ -23,6 +23,7 @@
  * @copyright Since 2007 PrestaShop SA and Contributors
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
  */
+
 use PHPUnit\Framework\TestCase;
 use PrestaShop\Module\AutoUpgrade\UpgradeContainer;
 
@@ -41,8 +42,10 @@ class UpgradeContainerTest extends TestCase
     {
         $container = $this->getMockBuilder(UpgradeContainer::class)
             ->setConstructorArgs([__DIR__, __DIR__ . '/..'])
-            ->setMethods(['getDb'])
+            ->setMethods(['getDb', 'getUpgrader'])
             ->getMock();
+
+        $container->getState()->setInstallVersion('1.7.1.0');
         $actualClass = get_class(call_user_func([$container, $functionName]));
         $this->assertSame($actualClass, $expectedClass);
     }
@@ -52,18 +55,21 @@ class UpgradeContainerTest extends TestCase
         // | Function to call | Expected class |
         return [
             ['getCacheCleaner', PrestaShop\Module\AutoUpgrade\UpgradeTools\CacheCleaner::class],
+            ['getChecksumCompare', PrestaShop\Module\AutoUpgrade\Xml\ChecksumCompare::class],
             ['getCookie', PrestaShop\Module\AutoUpgrade\Cookie::class],
             ['getFileConfigurationStorage', PrestaShop\Module\AutoUpgrade\Parameters\FileConfigurationStorage::class],
             ['getFileFilter', \PrestaShop\Module\AutoUpgrade\UpgradeTools\FileFilter::class],
-            // array('getUpgrader', \PrestaShop\Module\AutoUpgrade\Upgrader::class),
+            // ['getUpgrader', \PrestaShop\Module\AutoUpgrade\Upgrader::class],
             ['getFilesystemAdapter', PrestaShop\Module\AutoUpgrade\UpgradeTools\FilesystemAdapter::class],
-            ['getLogger', PrestaShop\Module\AutoUpgrade\Log\LegacyLogger::class],
-            ['getModuleAdapter', PrestaShop\Module\AutoUpgrade\UpgradeTools\ModuleAdapter::class],
+            ['getFileLoader', PrestaShop\Module\AutoUpgrade\Xml\FileLoader::class],
+            ['getLogger', PrestaShop\Module\AutoUpgrade\Log\WebLogger::class],
+            ['getModuleAdapter', \PrestaShop\Module\AutoUpgrade\UpgradeTools\Module\ModuleAdapter::class],
             ['getState', \PrestaShop\Module\AutoUpgrade\State::class],
             ['getSymfonyAdapter', PrestaShop\Module\AutoUpgrade\UpgradeTools\SymfonyAdapter::class],
             ['getTranslationAdapter', \PrestaShop\Module\AutoUpgrade\UpgradeTools\Translation::class],
             ['getTranslator', \PrestaShop\Module\AutoUpgrade\UpgradeTools\Translator::class],
-            ['getTwig', \Twig\Environment::class],
+            // Cannot be run in the context of unit tests as the class would be loaded from PS dependencies
+            // ['getTwig', \Twig\Environment::class],
             ['getPrestaShopConfiguration', PrestaShop\Module\AutoUpgrade\PrestashopConfiguration::class],
             ['getUpgradeConfiguration', PrestaShop\Module\AutoUpgrade\Parameters\UpgradeConfiguration::class],
             ['getWorkspace', PrestaShop\Module\AutoUpgrade\Workspace::class],

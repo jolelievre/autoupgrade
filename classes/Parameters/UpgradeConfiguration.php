@@ -27,51 +27,77 @@
 
 namespace PrestaShop\Module\AutoUpgrade\Parameters;
 
+use Configuration;
 use Doctrine\Common\Collections\ArrayCollection;
+use Shop;
+use UnexpectedValueException;
 
 /**
  * Contains the module configuration (form params).
+ *
+ * @extends ArrayCollection<string, mixed>
  */
 class UpgradeConfiguration extends ArrayCollection
 {
-    /**
-     * Performance settings, if your server has a low memory size, lower these values.
-     *
-     * @var array
-     */
-    protected $performanceValues = [
-        'loopFiles' => [400, 800, 1600], // files
-        'loopTime' => [6, 12, 25], // seconds
-        'maxBackupFileSize' => [15728640, 31457280, 62914560], // bytes
-        'maxWrittenAllowed' => [4194304, 8388608, 16777216], // bytes
+    const UPGRADE_CONST_KEYS = [
+        'PS_AUTOUP_CUSTOM_MOD_DESACT',
+        'PS_AUTOUP_CHANGE_DEFAULT_THEME',
+        'PS_AUTOUP_UPDATE_RTL_FILES',
+        'PS_AUTOUP_KEEP_MAILS',
+        'PS_AUTOUP_BACKUP',
+        'PS_AUTOUP_KEEP_IMAGES',
+        'PS_DISABLE_OVERRIDES',
+    ];
+
+    const PS_CONST_DEFAULT_VALUE = [
+        'PS_AUTOUP_CUSTOM_MOD_DESACT' => 1,
+        'PS_AUTOUP_CHANGE_DEFAULT_THEME' => 0,
+        'PS_AUTOUP_UPDATE_RTL_FILES' => 1,
+        'PS_AUTOUP_KEEP_MAILS' => 0,
+        'PS_AUTOUP_BACKUP' => 1,
+        'PS_AUTOUP_KEEP_IMAGES' => 1,
     ];
 
     /**
-     * Get the name of the new release archive.
+     * Performance settings, if your server has a low memory size, lower these values.
      *
-     * @return string
+     * @var array<string, int>
      */
-    public function getArchiveFilename()
+    private const PERFORMANCE_VALUES = [
+        'loopFiles' => 400, // files
+        'loopTime' => 6, // seconds
+        'maxBackupFileSize' => 15728640, // bytes
+        'maxWrittenAllowed' => 4194304, // bytes
+    ];
+
+    /** @var ConfigurationValidator */
+    private $validator;
+
+    /**
+     * Get the name of the new release archive.
+     */
+    public function getArchiveZip(): string
     {
-        return $this->get('archive.filename');
+        return $this->get('archive_zip');
+    }
+
+    public function getArchiveXml(): string
+    {
+        return $this->get('archive_xml');
     }
 
     /**
      * Get the version included in the new release.
-     *
-     * @return string
      */
-    public function getArchiveVersion()
+    public function getArchiveVersion(): string
     {
-        return $this->get('archive.version_num');
+        return $this->get('archive_version_num');
     }
 
     /**
      * Get channel selected on config panel (Minor, major ...).
-     *
-     * @return string
      */
-    public function getChannel()
+    public function getChannel(): string
     {
         return $this->get('channel');
     }
@@ -79,47 +105,44 @@ class UpgradeConfiguration extends ArrayCollection
     /**
      * @return int Number of files to handle in a single call to avoid timeouts
      */
-    public function getNumberOfFilesPerCall()
+    public function getNumberOfFilesPerCall(): int
     {
-        return $this->performanceValues['loopFiles'][$this->getPerformanceLevel()];
+        return $this::PERFORMANCE_VALUES['loopFiles'];
     }
 
     /**
      * @return int Number of seconds allowed before having to make another request
      */
-    public function getTimePerCall()
+    public function getTimePerCall(): int
     {
-        return $this->performanceValues['loopTime'][$this->getPerformanceLevel()];
+        return $this::PERFORMANCE_VALUES['loopTime'];
     }
 
     /**
      * @return int Kind of reference for SQL file creation, giving a file size before another request is needed
      */
-    public function getMaxSizeToWritePerCall()
+    public function getMaxSizeToWritePerCall(): int
     {
-        return $this->performanceValues['maxWrittenAllowed'][$this->getPerformanceLevel()];
+        return $this::PERFORMANCE_VALUES['maxWrittenAllowed'];
     }
 
     /**
      * @return int Max file size allowed in backup
      */
-    public function getMaxFileToBackup()
+    public function getMaxFileToBackup(): int
     {
-        return $this->performanceValues['maxBackupFileSize'][$this->getPerformanceLevel()];
+        return $this::PERFORMANCE_VALUES['maxBackupFileSize'];
+    }
+
+    public function shouldBackupFilesAndDatabase(): bool
+    {
+        return (bool) $this->get('PS_AUTOUP_BACKUP');
     }
 
     /**
-     * @return int level of performance selected (0 for low, 2 for high)
+     * @return bool True if the autoupgrade module backup should include the images
      */
-    public function getPerformanceLevel()
-    {
-        return $this->get('PS_AUTOUP_PERFORMANCE') - 1;
-    }
-
-    /**
-     * @return bool True if the autoupgrade module should backup the images as well
-     */
-    public function shouldBackupImages()
+    public function shouldBackupImages(): bool
     {
         return (bool) $this->get('PS_AUTOUP_KEEP_IMAGES');
     }
@@ -127,7 +150,7 @@ class UpgradeConfiguration extends ArrayCollection
     /**
      * @return bool True if non-native modules must be disabled during upgrade
      */
-    public function shouldDeactivateCustomModules()
+    public function shouldDeactivateCustomModules(): bool
     {
         return (bool) $this->get('PS_AUTOUP_CUSTOM_MOD_DESACT');
     }
@@ -135,7 +158,7 @@ class UpgradeConfiguration extends ArrayCollection
     /**
      * @return bool true if we should keep the merchant emails untouched
      */
-    public function shouldKeepMails()
+    public function shouldKeepMails(): bool
     {
         return (bool) $this->get('PS_AUTOUP_KEEP_MAILS');
     }
@@ -143,29 +166,48 @@ class UpgradeConfiguration extends ArrayCollection
     /**
      * @return bool True if we have to set the native theme by default
      */
-    public function shouldSwitchToDefaultTheme()
+    public function shouldSwitchToDefaultTheme(): bool
     {
         return (bool) $this->get('PS_AUTOUP_CHANGE_DEFAULT_THEME');
     }
 
-    /**
-     * @return bool True if we are allowed to update the default theme files
-     */
-    public function shouldUpdateDefaultTheme()
+    public static function isOverrideAllowed(): bool
     {
-        return (bool) $this->get('PS_AUTOUP_UPDATE_DEFAULT_THEME');
+        return (bool) Configuration::get('PS_DISABLE_OVERRIDES');
+    }
+
+    public static function updateDisabledOverride(bool $value, ?int $shopId = null): void
+    {
+        if ($shopId) {
+            Configuration::updateValue('PS_DISABLE_OVERRIDES', $value, false, null, (int) $shopId);
+        } else {
+            Configuration::updateGlobalValue('PS_DISABLE_OVERRIDES', $value);
+        }
+    }
+
+    public static function updatePSDisableOverrides(bool $value): void
+    {
+        foreach (Shop::getCompleteListOfShopsID() as $id_shop) {
+            self::updateDisabledOverride($value, $id_shop);
+        }
+        self::updateDisabledOverride($value);
     }
 
     /**
-     * @return bool True if we should update RTL files
+     * @param array<string, mixed> $array
+     *
+     * @return void
+     *
+     * @throws UnexpectedValueException
      */
-    public function shouldUpdateRTLFiles()
+    public function merge(array $array = []): void
     {
-        return (bool) $this->get('PS_AUTOUP_UPDATE_RTL_FILES');
-    }
+        if ($this->validator === null) {
+            $this->validator = new ConfigurationValidator();
+        }
 
-    public function merge(array $array = [])
-    {
+        $this->validator->validate($array);
+
         foreach ($array as $key => $value) {
             $this->set($key, $value);
         }

@@ -29,6 +29,8 @@ namespace PrestaShop\Module\AutoUpgrade\UpgradeTools;
 
 use DirectoryIterator;
 use PrestaShop\Module\AutoUpgrade\Parameters\UpgradeConfiguration;
+use PrestaShop\Module\AutoUpgrade\Services\ComposerService;
+use SplFileInfo;
 
 class FileFilter
 {
@@ -36,6 +38,9 @@ class FileFilter
      * @var UpgradeConfiguration
      */
     protected $configuration;
+
+    /** @var ComposerService */
+    protected $composerService;
 
     /**
      * @var string Autoupgrade sub directory
@@ -48,7 +53,7 @@ class FileFilter
     protected $rootDir;
 
     /**
-     * @var array|null
+     * @var string[]
      */
     protected $excludeAbsoluteFilesFromUpgrade;
 
@@ -58,27 +63,22 @@ class FileFilter
         'autoupgrade',
     ];
 
-    /**
-     * @param UpgradeConfiguration $configuration
-     * @param string $rootDir
-     * @param string $autoupgradeDir
-     */
     public function __construct(
         UpgradeConfiguration $configuration,
-        $rootDir,
-        $autoupgradeDir = 'autoupgrade'
+        ComposerService $composerService,
+        string $rootDir,
+        string $autoupgradeDir = 'autoupgrade'
     ) {
         $this->configuration = $configuration;
+        $this->composerService = $composerService;
         $this->rootDir = $rootDir;
         $this->autoupgradeDir = $autoupgradeDir;
     }
 
     /**
-     * AdminSelfUpgrade::backupIgnoreAbsoluteFiles.
-     *
-     * @return array
+     * @return string[]
      */
-    public function getFilesToIgnoreOnBackup()
+    public function getFilesToIgnoreOnBackup(): array
     {
         // during backup, do not save
         $backupIgnoreAbsoluteFiles = [
@@ -104,11 +104,9 @@ class FileFilter
     }
 
     /**
-     * AdminSelfUpgrade::restoreIgnoreAbsoluteFiles.
-     *
-     * @return array
+     * @return string[]
      */
-    public function getFilesToIgnoreOnRestore()
+    public function getFilesToIgnoreOnRestore(): array
     {
         $restoreIgnoreAbsoluteFiles = [
             '/app/config/parameters.php',
@@ -129,26 +127,44 @@ class FileFilter
     }
 
     /**
-     * AdminSelfUpgrade::excludeAbsoluteFilesFromUpgrade.
-     *
-     * @return array
+     * @return string[]
      */
-    public function getFilesToIgnoreOnUpgrade()
+    public function getFilesToIgnoreOnUpgrade(): array
     {
         if ($this->excludeAbsoluteFilesFromUpgrade) {
             return $this->excludeAbsoluteFilesFromUpgrade;
         }
 
-        // do not copy install, neither app/config/parameters.php in case it would be present
         $this->excludeAbsoluteFilesFromUpgrade = [
             '/app/config/parameters.php',
             '/app/config/parameters.yml',
+            '/img/c/*.jpg',
+            '/img/cms/*.jpg',
+            '/img/l/*.jpg',
+            '/img/m/*.jpg',
+            '/img/os/*.jpg',
+            '/img/p/*.jpg',
+            '/img/s/*.jpg',
+            '/img/scenes/*.jpg',
+            '/img/st/*.jpg',
+            '/img/su/*.jpg',
+            '/img/404.gif',
+            '/img/favicon.ico',
+            '/img/logo.jpg',
+            '/img/logo_stores.gif',
             '/install',
             '/install-dev',
+            '/override',
+            '/override/classes',
+            '/override/controllers',
+            '/override/modules',
         ];
 
         // Fetch all existing native modules
-        $nativeModules = $this->getNativeModules();
+        $nativeModules = array_column(
+            $this->composerService->getModulesInComposerLock($this->rootDir . '/composer.lock'),
+            'name'
+        );
 
         if (is_dir($this->rootDir . '/modules')) {
             $dir = new DirectoryIterator($this->rootDir . '/modules');
@@ -156,33 +172,28 @@ class FileFilter
                 if (!$fileinfo->isDir() || $fileinfo->isDot()) {
                     continue;
                 }
-                if (in_array($fileinfo->getFilename(), $nativeModules)) {
-                    $this->excludeAbsoluteFilesFromUpgrade[] = '/modules/' . $fileinfo->getFilename();
+                if (!in_array($fileinfo->getFilename(), $nativeModules)) {
+                    continue;
                 }
+                if (!(new SplFileInfo($this->rootDir . '/modules/' . $fileinfo->getFilename() . '/vendor'))->isDir()) {
+                    // If a vendor folder is found in the module, this means it has been upgraded or manually installed
+                    // and can be ignored during the upgrade process
+                    continue;
+                }
+                $this->excludeAbsoluteFilesFromUpgrade[] = '/modules/' . $fileinfo->getFilename();
             }
-        }
-
-        // this will exclude autoupgrade dir from admin, and autoupgrade from modules
-        // If set to false, we need to preserve the default themes
-        if (!$this->configuration->shouldUpdateDefaultTheme()) {
-            $this->excludeAbsoluteFilesFromUpgrade[] = '/themes/classic';
-            $this->excludeAbsoluteFilesFromUpgrade[] = '/themes/default-bootstrap';
         }
 
         return $this->excludeAbsoluteFilesFromUpgrade;
     }
 
     /**
-     * AdminSelfUpgrade::backupIgnoreFiles
-     * AdminSelfUpgrade::excludeFilesFromUpgrade
-     * AdminSelfUpgrade::restoreIgnoreFiles.
-     *
      * These files are checked in every subfolder of the directory tree and can match
      * several time, while the others are only matching a file from the project root.
      *
-     * @return array
+     * @return string[]
      */
-    public function getExcludeFiles()
+    public function getExcludeFiles(): array
     {
         return [
             '.',
@@ -191,39 +202,5 @@ class FileFilter
             '.git',
             $this->autoupgradeDir,
         ];
-    }
-
-    /**
-     * Returns an array of native modules
-     *
-     * @return array<string>
-     */
-    private function getNativeModules()
-    {
-        $composerFile = $this->rootDir . '/composer.lock';
-        if (!file_exists($composerFile)) {
-            return [];
-        }
-        // Native modules are the one integrated in PrestaShop release via composer
-        // so we use the lock files to generate the list
-        $content = file_get_contents($composerFile);
-        $content = json_decode($content, true);
-        if (empty($content['packages'])) {
-            return [];
-        }
-
-        $modules = array_filter($content['packages'], function (array $package) {
-            return self::COMPOSER_PACKAGE_TYPE === $package['type'] && !empty($package['name']);
-        });
-        $modules = array_map(function (array $package) {
-            $vendorName = explode('/', $package['name']);
-
-            return $vendorName[1];
-        }, $modules);
-
-        return array_merge(
-            $modules,
-            self::ADDITIONAL_ALLOWED_MODULES
-        );
     }
 }

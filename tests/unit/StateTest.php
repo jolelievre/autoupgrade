@@ -38,20 +38,6 @@ class StateTest extends TestCase
         $this->assertSame('doge', $exported['backupName']);
     }
 
-    public function testClassReceivesModulesAddonsProperty()
-    {
-        $modules = [
-            22320 => 'ps_imageslider',
-            22323 => 'ps_socialfollow',
-        ];
-        $state = new State();
-        $state->importFromArray(['modules_addons' => $modules]);
-        $exported = $state->export();
-
-        $this->assertSame($modules, $state->getModules_addons());
-        $this->assertSame($modules, $exported['modules_addons']);
-    }
-
     public function testClassIgnoresRandomData()
     {
         $state = new State();
@@ -86,7 +72,40 @@ class StateTest extends TestCase
 
         $this->assertSame('doge', $state->getBackupName());
         $this->assertSame('doge', $exported['backupName']);
-        $this->assertSame($modules, $state->getModules_addons());
-        $this->assertSame($modules, $exported['modules_addons']);
+    }
+
+    public function testGetRestoreVersion()
+    {
+        $state = new State();
+
+        $this->assertSame(
+            '1.7.8.11',
+            $state->setRestoreName('V1.7.8.11_20240604-170048-3ceb32b2')
+                ->getRestoreVersion()
+        );
+
+        $this->assertSame(
+            '8.1.6',
+            $state->setRestoreName('V8.1.6_20240604-170048-3ceb32b2')
+                ->getRestoreVersion()
+        );
+    }
+
+    public function testProgressionValue()
+    {
+        $state = new State();
+        $this->assertSame(null, $state->getProgressPercentage());
+
+        $state->setProgressPercentage(0);
+        $this->assertSame(0, $state->getProgressPercentage());
+
+        $state->setProgressPercentage(55);
+        $this->assertSame(55, $state->getProgressPercentage());
+
+        // Percentage cannot go down, an exception will be thrown
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Updated progress percentage cannot be lower than the currently set one.');
+
+        $state->setProgressPercentage(10);
     }
 }

@@ -28,18 +28,17 @@
 namespace PrestaShop\Module\AutoUpgrade\Twig\Block;
 
 use Configuration;
-use PrestaShop\Module\AutoUpgrade\ChannelInfo;
 use PrestaShop\Module\AutoUpgrade\Parameters\UpgradeConfiguration;
-use PrestaShop\Module\AutoUpgrade\TaskRunner\AbstractTask;
+use PrestaShop\Module\AutoUpgrade\Task\AbstractTask;
 use PrestaShop\Module\AutoUpgrade\Upgrader;
 use PrestaShop\Module\AutoUpgrade\UpgradeSelfCheck;
 use PrestaShop\Module\AutoUpgrade\UpgradeTools\Translator;
-use Twig_Environment;
+use Twig\Environment;
 
 class UpgradeButtonBlock
 {
     /**
-     * @var Twig_Environment|\Twig\Environment
+     * @var Environment
      */
     private $twig;
 
@@ -74,18 +73,7 @@ class UpgradeButtonBlock
     private $token;
 
     /**
-     * @var bool
-     */
-    private $manualMode;
-
-    /**
-     * UpgradeButtonBlock constructor.
-     *
-     * @param Twig_Environment|\Twig\Environment $twig
-     * @param Translator $translator
-     * @param UpgradeConfiguration $config
-     * @param Upgrader $upgrader
-     * @param UpgradeSelfCheck $selfCheck
+     * @param Environment $twig
      */
     public function __construct(
         $twig,
@@ -93,9 +81,8 @@ class UpgradeButtonBlock
         UpgradeConfiguration $config,
         Upgrader $upgrader,
         UpgradeSelfCheck $selfCheck,
-        $downloadPath,
-        $token,
-        $manualMode
+        string $downloadPath,
+        string $token
     ) {
         $this->twig = $twig;
         $this->translator = $translator;
@@ -104,64 +91,40 @@ class UpgradeButtonBlock
         $this->selfCheck = $selfCheck;
         $this->downloadPath = $downloadPath;
         $this->token = $token;
-        $this->manualMode = $manualMode;
     }
 
     /**
-     * display the summary current version / target version + "Upgrade Now" button with a "more options" button.
-     *
-     * @return string HTML
+     * @return array<string, mixed>
      */
-    public function render()
+    public function getTemplateVars(): array
     {
-        $translator = $this->translator;
-
-        $versionCompare = $this->upgrader->version_num !== null
-            ? version_compare(_PS_VERSION_, $this->upgrader->version_num)
-            : 0
-        ;
-        $channel = $this->config->get('channel');
-
-        if (!in_array($channel, ['archive', 'directory']) && !empty($this->upgrader->version_num)) {
-            $latestVersion = "{$this->upgrader->version_name} - ({$this->upgrader->version_num})";
-        } else {
-            $latestVersion = $translator->trans('N/A', [], 'Admin.Global');
-        }
-
         $showUpgradeButton = false;
         $showUpgradeLink = false;
         $upgradeLink = '';
         $changelogLink = '';
         $skipActions = [];
+        $channel = $this->upgrader->getChannel();
 
         // decide to display "Start Upgrade" or not
-        if ($this->selfCheck->isOkForUpgrade() && $versionCompare < 0) {
+        if ($this->selfCheck->isOkForUpgrade() && !$this->upgrader->isLastVersion()) {
             $showUpgradeButton = true;
-            if (!in_array($channel, ['archive', 'directory'])) {
-                if ($channel == 'private') {
-                    $this->upgrader->link = $this->config->get('private_release_link');
-                }
-
+            if ($this->upgrader->getChannel() === Upgrader::CHANNEL_ONLINE) {
                 $showUpgradeLink = true;
-                $upgradeLink = $this->upgrader->link;
-                $changelogLink = $this->upgrader->changelog;
+                $upgradeLink = $this->upgrader->getOnlineDestinationRelease()->getZipDownloadUrl();
+                $changelogLink = $this->upgrader->getOnlineDestinationRelease()->getReleaseNoteUrl();
             }
 
             // if skipActions property is used, we will handle that in the display :)
             $skipActions = AbstractTask::$skipAction;
         }
 
-        if (empty($channel)) {
-            $channel = Upgrader::DEFAULT_CHANNEL;
-        }
-
         $dir = glob($this->downloadPath . DIRECTORY_SEPARATOR . '*.zip');
         $xml = glob($this->downloadPath . DIRECTORY_SEPARATOR . '*.xml');
 
-        $data = [
-            'versionCompare' => $versionCompare,
+        return [
             'currentPsVersion' => _PS_VERSION_,
-            'latestChannelVersion' => $latestVersion,
+            'isLastVersion' => $this->upgrader->isLastVersion(),
+            'destinationVersion' => $this->upgrader->getDestinationVersion(),
             'channel' => $channel,
             'showUpgradeButton' => $showUpgradeButton,
             'upgradeLink' => $upgradeLink,
@@ -171,7 +134,6 @@ class UpgradeButtonBlock
             'lastVersionCheck' => Configuration::get('PS_LAST_VERSION_CHECK'),
             'token' => $this->token,
             'channelOptions' => $this->getOptChannels(),
-            'channelInfoBlock' => $this->buildChannelInfoBlock($channel),
             'privateChannel' => [
                 'releaseLink' => $this->config->get('private_release_link'),
                 'releaseMd5' => $this->config->get('private_release_md5'),
@@ -179,53 +141,35 @@ class UpgradeButtonBlock
             ],
             'archiveFiles' => $dir,
             'xmlFiles' => $xml,
-            'archiveFileName' => $this->config->get('archive.filename'),
-            'xmlFileName' => $this->config->get('archive.xml'),
-            'archiveVersionNumber' => $this->config->get('archive.version_num'),
+            'archiveFileName' => $this->config->getArchiveZip(),
+            'xmlFileName' => $this->config->getArchiveXml(),
+            'archiveVersionNumber' => $this->config->getArchiveVersion(),
             'downloadPath' => $this->downloadPath . DIRECTORY_SEPARATOR,
             'directoryVersionNumber' => $this->config->get('directory.version_num'),
-            'manualMode' => $this->manualMode,
             'phpVersion' => PHP_VERSION,
         ];
-
-        return $this->twig->render('@ModuleAutoUpgrade/block/upgradeButtonBlock.twig', $data);
     }
 
     /**
-     * @return array
+     * display the summary current version / target version + "Upgrade Now" button with a "more options" button.
+     *
+     * @return string HTML
      */
-    private function getOptChannels()
+    public function render(): string
+    {
+        return $this->twig->render('@ModuleAutoUpgrade/block/upgradeButtonBlock.html.twig', $this->getTemplateVars());
+    }
+
+    /**
+     * @return array<int, array<string>>
+     */
+    private function getOptChannels(): array
     {
         $translator = $this->translator;
 
         return [
-            // Hey ! I'm really using a fieldset element to regroup fields ?! !
-            ['useMajor', 'major', $translator->trans('Major release', [], 'Modules.Autoupgrade.Admin')],
-            ['useMinor', 'minor', $translator->trans('Minor release (recommended)', [], 'Modules.Autoupgrade.Admin')],
-            ['useRC', 'rc', $translator->trans('Release candidates', [], 'Modules.Autoupgrade.Admin')],
-            ['useBeta', 'beta', $translator->trans('Beta releases', [], 'Modules.Autoupgrade.Admin')],
-            ['useAlpha', 'alpha', $translator->trans('Alpha releases', [], 'Modules.Autoupgrade.Admin')],
-            ['usePrivate', 'private', $translator->trans('Private release (require link and MD5 hash)', [], 'Modules.Autoupgrade.Admin')],
-            ['useArchive', 'archive', $translator->trans('Local archive', [], 'Modules.Autoupgrade.Admin')],
-            ['useDirectory', 'directory', $translator->trans('Local directory', [], 'Modules.Autoupgrade.Admin')],
+            ['useOnline', Upgrader::CHANNEL_ONLINE, $translator->trans('Online')],
+            ['useLocal', Upgrader::CHANNEL_LOCAL, $translator->trans('Local archive')],
         ];
-    }
-
-    private function getInfoForChannel($channel)
-    {
-        return new ChannelInfo($this->upgrader, $this->config, $channel);
-    }
-
-    /**
-     * @param string $channel
-     *
-     * @return string
-     */
-    private function buildChannelInfoBlock($channel)
-    {
-        $channelInfo = $this->getInfoForChannel($channel);
-
-        return (new ChannelInfoBlock($this->config, $channelInfo, $this->twig))
-            ->render();
     }
 }

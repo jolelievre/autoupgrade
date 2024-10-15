@@ -1,18 +1,21 @@
 name: PHP tests
 on: [push, pull_request]
+concurrency:
+  group: ${{ github.event_name }}-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   # Check there is no syntax errors in the project
   php-linter:
-    name: PHP Syntax check 5.6 => 8.1
+    name: PHP Syntax check 7.1 => 8.1
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2.0.0
+        uses: actions/checkout@v4.1.3
 
-      - name: PHP syntax checker 5.6
-        uses: prestashop/github-action-php-lint/5.6@master
+      - name: PHP syntax checker 7.1
+        uses: prestashop/github-action-php-lint/7.1@master
         with:
-          folder-to-exclude: "! -path \"./.github/*\" ! -path \"./classes/UpgradeTools/CoreUpgrader/CoreUpgrader80.php\""
+          folder-to-exclude: "! -path \"./.github/*\""
 
       - name: PHP syntax checker 7.2
         uses: prestashop/github-action-php-lint/7.2@master
@@ -47,29 +50,27 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '5.6'
+          php-version: '7.1'
 
       - name: Checkout
-        uses: actions/checkout@v2.0.0
+        uses: actions/checkout@v4.1.3
 
       - name: Cache dependencies
-        uses: actions/cache@v2
+        uses: actions/cache@v4.0.2
         with:
           path: vendor
           key: php-${{ hashFiles('composer.lock') }}
 
-      - name: Install dependencies
-        run: |
-          composer global require friendsofphp/php-cs-fixer
-          composer global require prestashop/php-dev-tools
+      - name: Composer Install
+        run: composer install --prefer-dist
 
       - name: Run PHP-CS-Fixer
-        run: php-cs-fixer fix --dry-run --diff --using-cache=no
+        run: ./vendor/bin/php-cs-fixer fix --dry-run --diff --using-cache=no
 
   php-unit:
     strategy:
       matrix:
-        php-versions: ['5.6', '7.1', '7.2','7.4']
+        php-versions: ['7.1', '7.2','7.4','8.1']
     runs-on: ubuntu-latest
     name: PHP Unit
     steps:
@@ -78,7 +79,7 @@ jobs:
         with:
           php-version: ${{ matrix.php-versions }}
           extensions: mbstring, intl, gd, xml, dom, json, fileinfo, curl, zip, iconv, ext-zip
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4.1.3
         with:
           fetch-depth: 0
 
@@ -91,38 +92,34 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        presta-versions: ['1.6.1.18', '1.7.2.5', '1.7.3.4', '1.7.4.4', '1.7.5.1', '1.7.6', '1.7.7', '1.7.8', 'latest', '8.0.0-beta.1']
+        presta-versions: ['1.7.2.5', '1.7.3.4', '1.7.4.4', '1.7.5.1', '1.7.6', '1.7.7', '1.7.8', '8.0.0', 'latest']
     steps:
       - name: Checkout
-        uses: actions/checkout@v2.0.0
-
-      # Add vendor folder in cache to make next builds faster
-      - name: Cache vendor folder
-        uses: actions/cache@v1
-        with:
-          path: vendor
-          key: php-${{ hashFiles('composer.lock') }}
-
-      # Add composer local folder in cache to make next builds faster
-      - name: Cache composer folder
-        uses: actions/cache@v1
-        with:
-          path: ~/.composer/cache
-          key: php-composer-cache
+        uses: actions/checkout@v4.1.3
 
       - run: composer install
 
+      - run: composer install
+        working-directory: ./tests
+
       - name: Execute PHPStan on PrestaShop (Tag ${{ matrix.presta-versions }})
+        run: bash tests/phpstan/phpstan.sh ${{ matrix.presta-versions }} --error-format=github
+
+  # Some scripts must be compatible with PHP 5.6 to display that the PHP version is incompatible
+  check-php5-scripts:
+    runs-on: ubuntu-latest
+    name: PHP 5.6 Syntax Check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 5.6
+
+      - name: Check files syntax
         run: |
-          docker rm -f temp-ps || true
-          docker volume rm -f ps-volume || true
-          docker run -d --rm -v ps-volume:/var/www/html --name temp-ps prestashop/prestashop:${{ matrix.presta-versions }}
-          docker exec -t temp-ps rm -rf /var/www/html/modules/autoupgrade
-          docker build -t phpstan:php-7.4 ./tests/phpstan/
-          docker run --rm \
-            --volumes-from temp-ps \
-            -v $PWD:/var/www/html/modules/autoupgrade \
-            -e _PS_ROOT_DIR_=/var/www/html \
-            --workdir=/var/www/html/modules/autoupgrade \
-            phpstan:php-7.4 \
-            analyse --configuration=/var/www/html/modules/autoupgrade/tests/phpstan/phpstan-${{ matrix.presta-versions }}.neon
+          for file in autoupgrade.php controllers/admin/AdminSelfUpgradeController.php classes/VersionUtils.php classes/UpgradeTools/Translator.php; do 
+            php -l $file; 
+          done

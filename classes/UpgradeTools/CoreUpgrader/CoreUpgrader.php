@@ -28,11 +28,21 @@
 namespace PrestaShop\Module\AutoUpgrade\UpgradeTools\CoreUpgrader;
 
 use Cache;
-use Configuration;
+use Exception;
+use InvalidArgumentException;
+use Language;
+use ParseError;
+use PrestaShop\Module\AutoUpgrade\Exceptions\UpgradeException;
 use PrestaShop\Module\AutoUpgrade\Log\LoggerInterface;
+use PrestaShop\Module\AutoUpgrade\Parameters\UpgradeConfiguration;
 use PrestaShop\Module\AutoUpgrade\UpgradeContainer;
-use PrestaShop\Module\AutoUpgrade\UpgradeException;
 use PrestaShop\Module\AutoUpgrade\UpgradeTools\ThemeAdapter;
+use PrestaShop\PrestaShop\Core\CommandBus\CommandBusInterface;
+use PrestaShop\PrestaShop\Core\Domain\Theme\Command\AdaptThemeToRTLLanguagesCommand;
+use PrestaShop\PrestaShop\Core\Domain\Theme\ValueObject\ThemeName;
+use PrestaShop\PrestaShop\Core\Exception\CoreException;
+use PrestaShop\PrestaShop\Core\Localization\RTL\Processor as RtlStylesheetProcessor;
+use Symfony\Component\Filesystem\Filesystem;
 
 /**
  * Class used to modify the core of PrestaShop, on the files are copied on the filesystem.
@@ -54,6 +64,11 @@ abstract class CoreUpgrader
      * @var LoggerInterface
      */
     protected $logger;
+
+    /**
+     * @var Filesystem
+     */
+    private $filesystem;
 
     /**
      * Version PrestaShop is upgraded to.
@@ -80,40 +95,60 @@ abstract class CoreUpgrader
     {
         $this->container = $container;
         $this->logger = $logger;
+
+        $this->filesystem = new Filesystem();
     }
 
-    public function doUpgrade()
+    public function doUpgrade(): void
     {
+        $this->logger->info($this->container->getTranslator()->trans('Initializing required environment constants'));
         $this->initConstants();
 
+        $this->logger->info($this->container->getTranslator()->trans('Checking version validity'));
         $oldversion = $this->getPreUpgradeVersion();
         $this->checkVersionIsNewer($oldversion);
 
         //check DB access
+        $this->logger->info($this->container->getTranslator()->trans('Checking connection to database'));
         error_reporting(E_ALL);
         $resultDB = \Db::checkConnection(_DB_SERVER_, _DB_USER_, _DB_PASSWD_, _DB_NAME_);
         if ($resultDB !== 0) {
-            throw new UpgradeException($this->container->getTranslator()->trans('Invalid database configuration', [], 'Modules.Autoupgrade.Admin'));
+            throw new UpgradeException($this->container->getTranslator()->trans('Invalid database configuration'));
         }
 
         if ($this->container->getUpgradeConfiguration()->shouldDeactivateCustomModules()) {
+            $this->logger->info($this->container->getTranslator()->trans('Disabling all non native modules'));
             $this->disableCustomModules();
+        } else {
+            $this->logger->info($this->container->getTranslator()->trans('Keeping non native modules enabled'));
         }
 
+        $this->logger->info($this->container->getTranslator()->trans('Updating database data and structure'));
         $this->upgradeDb($oldversion);
 
         // At this point, database upgrade is over.
         // Now we need to add all previous missing settings items, and reset cache and compile directories
         $this->writeNewSettings();
-        $this->runRecurrentQueries();
-        $this->logger->debug($this->container->getTranslator()->trans('Database upgrade OK', [], 'Modules.Autoupgrade.Admin')); // no error!
 
+        $this->logger->info($this->container->getTranslator()->trans('Running generic queries'));
+        $this->runRecurrentQueries();
+
+        $this->logger->info($this->container->getTranslator()->trans('Database upgrade OK')); // no error!
+
+        $this->logger->info($this->container->getTranslator()->trans('Upgrading languages'));
         $this->upgradeLanguages();
+
+        $this->logger->info($this->container->getTranslator()->trans('Regenerating htaccess'));
         $this->generateHtaccess();
+
+        $this->logger->info($this->container->getTranslator()->trans('Cleaning XML files'));
         $this->cleanXmlFiles();
 
-        if (Configuration::get('PS_DISABLE_OVERRIDES')) {
+        if (UpgradeConfiguration::isOverrideAllowed()) {
+            $this->logger->info($this->container->getTranslator()->trans('Disabling overrides'));
             $this->disableOverrides();
+        } else {
+            $this->logger->info($this->container->getTranslator()->trans('Keeping overrides in place'));
         }
 
         $this->updateTheme();
@@ -121,13 +156,16 @@ abstract class CoreUpgrader
         $this->runCoreCacheClean();
 
         if ($this->container->getState()->getWarningExists()) {
-            $this->logger->warning($this->container->getTranslator()->trans('Warning detected during upgrade.', [], 'Modules.Autoupgrade.Admin'));
+            $this->logger->warning($this->container->getTranslator()->trans('Warning detected during upgrade.'));
         } else {
-            $this->logger->info($this->container->getTranslator()->trans('Database upgrade completed', [], 'Modules.Autoupgrade.Admin'));
+            $this->logger->info($this->container->getTranslator()->trans('Database upgrade completed'));
         }
     }
 
-    protected function initConstants()
+    /**
+     * @throws Exception
+     */
+    protected function initConstants(): void
     {
         // Initialize
         // setting the memory limit to 128M only if current is lower
@@ -173,7 +211,6 @@ abstract class CoreUpgrader
         define('SETTINGS_FILE_YML', $this->container->getProperty(UpgradeContainer::PS_ROOT_PATH) . '/app/config/parameters.yml');
         define('DEFINES_FILE', $this->container->getProperty(UpgradeContainer::PS_ROOT_PATH) . '/config/defines.inc.php');
         define('INSTALLER__PS_BASE_URI', substr($_SERVER['REQUEST_URI'], 0, -1 * (strlen($_SERVER['REQUEST_URI']) - strrpos($_SERVER['REQUEST_URI'], '/')) - strlen(substr(dirname($_SERVER['REQUEST_URI']), strrpos(dirname($_SERVER['REQUEST_URI']), '/') + 1))));
-        //	define('INSTALLER__PS_BASE_URI_ABSOLUTE', 'http://'.ToolsInstall::getHttpHost(false, true).INSTALLER__PS_BASE_URI);
 
         define('_PS_INSTALL_PATH_', $this->pathToInstallFolder . '/');
         define('_PS_INSTALL_DATA_PATH_', _PS_INSTALL_PATH_ . 'data/');
@@ -210,55 +247,60 @@ abstract class CoreUpgrader
         $this->db = \Db::getInstance();
     }
 
-    protected function getPreUpgradeVersion()
+    protected function getPreUpgradeVersion(): string
     {
-        return $this->normalizeVersion(\Configuration::get('PS_VERSION_DB'));
+        return $this->normalizeVersion($this->container->getState()->getOriginVersion());
     }
 
     /**
      * Add missing levels in version.
-     * Example: 1.7 will become 1.7.0.0.
-     *
-     * @param string $version
-     *
-     * @return string
+     * Example: 1.7 will become 1.7.0.0 and 8.1 will become 8.1.0.
      *
      * @internal public for tests
      */
-    public function normalizeVersion($version)
+    public function normalizeVersion(string $version): string
     {
         $arrayVersion = explode('.', $version);
-        if (count($arrayVersion) < 4) {
-            $arrayVersion = array_pad($arrayVersion, 4, '0');
+        $versionLevels = 1 == $arrayVersion[0] ? 4 : 3;
+        if (count($arrayVersion) < $versionLevels) {
+            $arrayVersion = array_pad($arrayVersion, $versionLevels, '0');
         }
 
         return implode('.', $arrayVersion);
     }
 
-    protected function checkVersionIsNewer($oldVersion)
+    /**
+     * @throws UpgradeException
+     */
+    protected function checkVersionIsNewer(string $oldVersion): void
     {
         if (strpos($this->destinationUpgradeVersion, '.') === false) {
-            throw new UpgradeException($this->container->getTranslator()->trans('%s is not a valid version number.', [$this->destinationUpgradeVersion], 'Modules.Autoupgrade.Admin'));
+            throw new UpgradeException($this->container->getTranslator()->trans('%s is not a valid version number.', [$this->destinationUpgradeVersion]));
         }
 
         $versionCompare = version_compare($this->destinationUpgradeVersion, $oldVersion);
 
         if ($versionCompare === -1) {
-            throw new UpgradeException($this->container->getTranslator()->trans('[ERROR] Version to install is too old.', [], 'Modules.Autoupgrade.Admin') . ' ' . $this->container->getTranslator()->trans('Current version: %oldversion%. Version to install: %newversion%.', ['%oldversion%' => $oldVersion, '%newversion%' => $this->destinationUpgradeVersion], 'Modules.Autoupgrade.Admin'));
+            throw new UpgradeException($this->container->getTranslator()->trans('[ERROR] Version to install is too old.') . ' ' . $this->container->getTranslator()->trans('Current version: %oldversion%. Version to install: %newversion%.', ['%oldversion%' => $oldVersion, '%newversion%' => $this->destinationUpgradeVersion]));
         } elseif ($versionCompare === 0) {
-            throw new UpgradeException($this->container->getTranslator()->trans('You already have the %s version.', [$this->destinationUpgradeVersion], 'Modules.Autoupgrade.Admin'));
+            throw new UpgradeException($this->container->getTranslator()->trans('You already have the %s version.', [$this->destinationUpgradeVersion]));
         }
     }
 
     /**
      * Ask the core to disable the modules not coming from PrestaShop.
+     *
+     * @throws Exception
      */
-    protected function disableCustomModules()
+    protected function disableCustomModules(): void
     {
         $this->container->getModuleAdapter()->disableNonNativeModules($this->pathToUpgradeScripts);
     }
 
-    protected function upgradeDb($oldversion)
+    /**
+     * @throws UpgradeException
+     */
+    protected function upgradeDb(string $oldversion): void
     {
         $upgrade_dir_sql = $this->pathToUpgradeScripts . '/sql/';
         $sqlContentVersion = $this->applySqlParams(
@@ -272,10 +314,15 @@ abstract class CoreUpgrader
         }
     }
 
-    protected function getUpgradeSqlFilesListToApply($upgrade_dir_sql, $oldversion)
+    /**
+     * @throws UpgradeException
+     *
+     * @return array<string, string>
+     */
+    protected function getUpgradeSqlFilesListToApply(string $upgrade_dir_sql, string $oldversion): array
     {
         if (!file_exists($upgrade_dir_sql)) {
-            throw new UpgradeException($this->container->getTranslator()->trans('Unable to find upgrade directory in the installation path.', [], 'Modules.Autoupgrade.Admin'));
+            throw new UpgradeException($this->container->getTranslator()->trans('Unable to find upgrade directory in the installation path.'));
         }
 
         $upgradeFiles = $neededUpgradeFiles = [];
@@ -285,14 +332,14 @@ abstract class CoreUpgrader
                     continue;
                 }
                 if (!is_readable($upgrade_dir_sql . $file)) {
-                    throw new UpgradeException($this->container->getTranslator()->trans('Error while loading SQL upgrade file "%s".', [$file], 'Modules.Autoupgrade.Admin'));
+                    throw new UpgradeException($this->container->getTranslator()->trans('Error while loading SQL upgrade file "%s".', [$file]));
                 }
                 $upgradeFiles[] = str_replace('.sql', '', $file);
             }
             closedir($handle);
         }
         if (empty($upgradeFiles)) {
-            throw new UpgradeException($this->container->getTranslator()->trans('Cannot find the SQL upgrade files. Please check that the %s folder is not empty.', [$upgrade_dir_sql], 'Modules.Autoupgrade.Admin'));
+            throw new UpgradeException($this->container->getTranslator()->trans('Cannot find the SQL upgrade files. Please check that the %s folder is not empty.', [$upgrade_dir_sql]));
         }
         natcasesort($upgradeFiles);
 
@@ -308,11 +355,11 @@ abstract class CoreUpgrader
     /**
      * Replace some placeholders in the SQL upgrade files (prefix, engine...).
      *
-     * @param array $sqlFiles
+     * @param array<string, string> $sqlFiles
      *
-     * @return array of SQL requests per version
+     * @return array<string, string[]> of SQL requests per version
      */
-    protected function applySqlParams(array $sqlFiles)
+    protected function applySqlParams(array $sqlFiles): array
     {
         $search = ['PREFIX_', 'ENGINE_TYPE', 'DB_NAME'];
         $replace = [_DB_PREFIX_, (defined('_MYSQL_ENGINE_') ? _MYSQL_ENGINE_ : 'MyISAM'), _DB_NAME_];
@@ -335,7 +382,7 @@ abstract class CoreUpgrader
      * @param string $upgrade_file File in which the request is stored (for logs)
      * @param string $query
      */
-    protected function runQuery($upgrade_file, $query)
+    protected function runQuery(string $upgrade_file, string $query): void
     {
         $query = trim($query);
         if (empty($query)) {
@@ -343,37 +390,73 @@ abstract class CoreUpgrader
         }
         // If php code have to be executed
         if (strpos($query, '/* PHP:') !== false) {
-            return $this->runPhpQuery($upgrade_file, $query);
+            $this->runPhpQuery($upgrade_file, $query);
+
+            return;
         }
         $this->runSqlQuery($upgrade_file, $query);
     }
 
-    protected function runPhpQuery($upgrade_file, $query)
+    /**
+     * @param string $query
+     *
+     * @return false|string
+     */
+    private function extractPhpStringFromQuery(string $query)
+    {
+        $pos = strpos($query, '/* PHP:') + strlen('/* PHP:');
+
+        return substr($query, $pos, strlen($query) - $pos - strlen(' */;'));
+    }
+
+    /**
+     * @param string $phpString
+     *
+     * @return string
+     */
+    private function extractParametersAsString(string $phpString): string
+    {
+        preg_match('/\((.*)\)/', $phpString, $pattern);
+
+        return $pattern[0];
+    }
+
+    /**
+     * @param string $paramsString
+     *
+     * @return array<mixed>
+     */
+    private function extractParametersFromString(string $paramsString): array
+    {
+        $paramsString = trim($paramsString, '()');
+        $code = "return [$paramsString];";
+
+        try {
+            $parameters = eval($code);
+        } catch (ParseError $e) {
+            throw new InvalidArgumentException('Error while parsing the parameter string.');
+        }
+
+        return $parameters;
+    }
+
+    protected function runPhpQuery(string $upgrade_file, string $query): void
     {
         // Parsing php code
-        $pos = strpos($query, '/* PHP:') + strlen('/* PHP:');
-        $phpString = substr($query, $pos, strlen($query) - $pos - strlen(' */;'));
+        $phpString = $this->extractPhpStringFromQuery($query);
         $php = explode('::', $phpString);
-        preg_match('/\((.*)\)/', $phpString, $pattern);
-        $paramsString = trim($pattern[0], '()');
-        preg_match_all('/([^,]+),? ?/', $paramsString, $parameters);
-        $parameters = (isset($parameters[1]) && is_array($parameters[1])) ?
-            $parameters[1] :
-            [];
-        foreach ($parameters as &$parameter) {
-            $parameter = str_replace('\'', '', $parameter);
-        }
+        $stringParameters = $this->extractParametersAsString($phpString);
+        $parameters = $this->extractParametersFromString($stringParameters);
 
         // reset phpRes to a null value
         $phpRes = null;
         // Call a simple function
         if (strpos($phpString, '::') === false) {
-            $func_name = str_replace($pattern[0], '', $php[0]);
+            $func_name = str_replace($stringParameters, '', $php[0]);
             $pathToPhpDirectory = $this->pathToUpgradeScripts . 'php/';
 
             if (!file_exists($pathToPhpDirectory . strtolower($func_name) . '.php')) {
-                $this->logger->error('[ERROR] ' . $pathToPhpDirectory . strtolower($func_name) . ' PHP - missing file ' . $query);
-                $this->container->getState()->setWarningExists(true);
+                $this->logMissingFileError($pathToPhpDirectory, $func_name, $query);
 
                 return;
             }
@@ -383,25 +466,58 @@ abstract class CoreUpgrader
         }
         // Or an object method
         else {
-            $func_name = [$php[0], str_replace($pattern[0], '', $php[1])];
-            $this->logger->error('[ERROR] ' . $upgrade_file . ' PHP - Object Method call is forbidden (' . $php[0] . '::' . str_replace($pattern[0], '', $php[1]) . ')');
-            $this->container->getState()->setWarningExists(true);
+            $this->logForbiddenObjectMethodError($phpString, $upgrade_file);
 
             return;
         }
 
-        if (isset($phpRes) && (is_array($phpRes) && !empty($phpRes['error'])) || $phpRes === false) {
-            $this->logger->error('
-                [ERROR] PHP ' . $upgrade_file . ' ' . $query . "\n" . '
-                ' . (empty($phpRes['error']) ? '' : $phpRes['error'] . "\n") . '
-                ' . (empty($phpRes['msg']) ? '' : ' - ' . $phpRes['msg'] . "\n"));
-            $this->container->getState()->setWarningExists(true);
+        if ($this->hasPhpError($phpRes)) {
+            $this->logPhpError($upgrade_file, $query, $phpRes);
         } else {
             $this->logger->debug('<div class="upgradeDbOk">[OK] PHP ' . $upgrade_file . ' : ' . $query . '</div>');
         }
     }
 
-    protected function runSqlQuery($upgrade_file, $query)
+    /**
+     * @param mixed $phpRes
+     *
+     * @return bool
+     */
+    private function hasPhpError($phpRes): bool
+    {
+        return isset($phpRes) && (is_array($phpRes) && !empty($phpRes['error'])) || $phpRes === false;
+    }
+
+    /**
+     * @param string $upgrade_file
+     * @param string $query
+     * @param mixed $phpRes
+     *
+     * @return void
+     */
+    private function logPhpError(string $upgrade_file, string $query, $phpRes): void
+    {
+        $this->logger->error(
+            '[ERROR] PHP ' . $upgrade_file . ' ' . $query . "\n" .
+            (empty($phpRes['error']) ? '' : $phpRes['error'] . "\n") .
+            (empty($phpRes['msg']) ? '' : ' - ' . $phpRes['msg'] . "\n")
+        );
+        $this->container->getState()->setWarningExists(true);
+    }
+
+    private function logMissingFileError(string $path, string $func_name, string $query): void
+    {
+        $this->logger->error('[ERROR] ' . $path . strtolower($func_name) . ' PHP - missing file ' . $query);
+        $this->container->getState()->setWarningExists(true);
+    }
+
+    private function logForbiddenObjectMethodError(string $phpString, string $upgrade_file): void
+    {
+        $this->logger->error('[ERROR] ' . $upgrade_file . ' PHP - Object Method call is forbidden (' . $phpString . ')');
+        $this->container->getState()->setWarningExists(true);
+    }
+
+    protected function runSqlQuery(string $upgrade_file, string $query): void
     {
         if (strstr($query, 'CREATE TABLE') !== false) {
             $pattern = '/CREATE TABLE.*[`]*' . _DB_PREFIX_ . '([^`]*)[`]*\s\(/';
@@ -409,7 +525,7 @@ abstract class CoreUpgrader
             if (!empty($matches[1])) {
                 $drop = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . $matches[1] . '`;';
                 if ($this->db->execute($drop, false)) {
-                    $this->logger->debug('<div class="upgradeDbOk">' . $this->container->getTranslator()->trans('[DROP] SQL %s table has been dropped.', ['`' . _DB_PREFIX_ . $matches[1] . '`'], 'Modules.Autoupgrade.Admin') . '</div>');
+                    $this->logger->debug('<div class="upgradeDbOk">' . $this->container->getTranslator()->trans('[DROP] SQL %s table has been dropped.', ['`' . _DB_PREFIX_ . $matches[1] . '`']) . '</div>');
                 }
             }
         }
@@ -434,12 +550,12 @@ abstract class CoreUpgrader
         }
     }
 
-    public function writeNewSettings()
+    public function writeNewSettings(): void
     {
         // Do nothing
     }
 
-    protected function runRecurrentQueries()
+    protected function runRecurrentQueries(): void
     {
         $this->db->execute('UPDATE `' . _DB_PREFIX_ . 'configuration` SET `name` = \'PS_LEGACY_IMAGES\' WHERE name LIKE \'0\' AND `value` = 1');
         $this->db->execute('UPDATE `' . _DB_PREFIX_ . 'configuration` SET `value` = 0 WHERE `name` LIKE \'PS_LEGACY_IMAGES\'');
@@ -453,7 +569,7 @@ abstract class CoreUpgrader
         $this->db->execute('UPDATE `' . _DB_PREFIX_ . 'configuration` SET value="' . $this->destinationUpgradeVersion . '" WHERE name = "PS_VERSION_DB"', false);
     }
 
-    protected function upgradeLanguages()
+    protected function upgradeLanguages(): void
     {
         if (!defined('_PS_TOOL_DIR_')) {
             define('_PS_TOOL_DIR_', _PS_ROOT_DIR_ . '/tools/');
@@ -461,8 +577,8 @@ abstract class CoreUpgrader
         if (!defined('_PS_TRANSLATIONS_DIR_')) {
             define('_PS_TRANSLATIONS_DIR_', _PS_ROOT_DIR_ . '/translations/');
         }
-        if (!defined('_PS_MODULES_DIR_')) {
-            define('_PS_MODULES_DIR_', _PS_ROOT_DIR_ . '/modules/');
+        if (!defined('_PS_MODULE_DIR_')) {
+            define('_PS_MODULE_DIR_', _PS_ROOT_DIR_ . '/modules/');
         }
         if (!defined('_PS_MAILS_DIR_')) {
             define('_PS_MAILS_DIR_', _PS_ROOT_DIR_ . '/mails/');
@@ -478,9 +594,12 @@ abstract class CoreUpgrader
         }
     }
 
-    abstract protected function upgradeLanguage($lang);
+    /**
+     * @param array<string, mixed> $lang
+     */
+    abstract protected function upgradeLanguage($lang): void;
 
-    protected function generateHtaccess()
+    protected function generateHtaccess(): void
     {
         $this->loadEntityInterface();
 
@@ -609,12 +728,15 @@ abstract class CoreUpgrader
         \ToolsCore::generateHtaccess(null, $url_rewrite);
     }
 
-    protected function loadEntityInterface()
+    protected function loadEntityInterface(): void
     {
         require_once _PS_ROOT_DIR_ . '/src/Core/Foundation/Database/EntityInterface.php';
     }
 
-    protected function cleanXmlFiles()
+    /**
+     * @throws Exception
+     */
+    protected function cleanXmlFiles(): void
     {
         $files = [
             $this->container->getProperty(UpgradeContainer::PS_ADMIN_PATH) . DIRECTORY_SEPARATOR . 'themes' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'template' . DIRECTORY_SEPARATOR . 'controllers' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'header.tpl',
@@ -639,7 +761,7 @@ abstract class CoreUpgrader
         }
     }
 
-    protected function disableOverrides()
+    protected function disableOverrides(): void
     {
         if (class_exists('PrestaShopAutoload') && method_exists('PrestaShopAutoload', 'generateIndex')) {
             \PrestaShopAutoload::getInstance()->_include_override_path = false;
@@ -647,14 +769,30 @@ abstract class CoreUpgrader
         }
     }
 
-    protected function updateTheme()
+    /**
+     * @throws UpgradeException
+     * @throws Exception
+     */
+    protected function updateTheme(): void
+    {
+        $this->updateRTLFiles();
+        $this->switchToDefaultTheme();
+    }
+
+    /**
+     * @throws UpgradeException
+     */
+    protected function switchToDefaultTheme(): void
     {
         // The merchant can ask for keeping its current theme.
         if (!$this->container->getUpgradeConfiguration()->shouldSwitchToDefaultTheme()) {
+            $this->logger->info($this->container->getTranslator()->trans('Keeping current theme'));
+
             return;
         }
-        $this->logger->info($this->container->getTranslator()->trans('Switching to default theme.', [], 'Modules.Autoupgrade.Admin'));
-        $themeAdapter = new ThemeAdapter($this->db, $this->destinationUpgradeVersion);
+
+        $this->logger->info($this->container->getTranslator()->trans('Switching to default theme.'));
+        $themeAdapter = new ThemeAdapter($this->db);
 
         Cache::clean('*');
 
@@ -667,8 +805,83 @@ abstract class CoreUpgrader
         }
     }
 
-    protected function runCoreCacheClean()
+    protected function updateRTLFiles(): void
     {
-        \Tools::clearCache();
+        if (!$this->container->shouldUpdateRTLFiles()) {
+            $this->logger->info($this->container->getTranslator()->trans('No RTL language detected, skipping RTL file update.'));
+
+            return;
+        }
+
+        // BO theme
+        if (class_exists(RtlStylesheetProcessor::class)) {
+            $this->logger->info($this->container->getTranslator()->trans('Upgrade the RTL files of back-office themes.'));
+
+            $this->removeExistingRTLFiles([
+                ['directory' => $this->container->getProperty(UpgradeContainer::PS_ADMIN_PATH) . DIRECTORY_SEPARATOR . 'themes'],
+            ]);
+
+            (new RtlStylesheetProcessor(
+                $this->container->getProperty(UpgradeContainer::PS_ADMIN_PATH),
+                $this->container->getProperty(UpgradeContainer::PS_ROOT_PATH) . DIRECTORY_SEPARATOR . 'themes',
+                []
+            ))
+                ->setProcessBOTheme(true)
+                ->setProcessDefaultModules(true)
+                ->process();
+        }
+
+        // FO themes
+        if (!class_exists(AdaptThemeToRTLLanguagesCommand::class)) {
+            return;
+        }
+
+        $this->logger->info($this->container->getTranslator()->trans('Upgrade the RTL files of front-office themes.'));
+        $themeAdapter = new ThemeAdapter($this->db);
+
+        $themes = $themeAdapter->getListFromDisk();
+        $this->removeExistingRTLFiles($themes);
+
+        foreach ($themes as $theme) {
+            $adaptThemeToTRLLanguages = new AdaptThemeToRTLLanguagesCommand(
+                new ThemeName($theme['name'])
+            );
+
+            /** @var CommandBusInterface $commandBus */
+            $commandBus = $this->container->getModuleAdapter()->getCommandBus();
+
+            try {
+                $commandBus->handle($adaptThemeToTRLLanguages);
+            } catch (CoreException $e) {
+                $this->logger->error('
+                    [ERROR] PHP Impossible to generate RTL files for theme' . $theme['name'] . "\n" .
+                    $e->getMessage()
+                );
+
+                $this->container->getState()->setWarningExists(true);
+            }
+        }
+    }
+
+    /**
+     * @param array{array{'directory':string}} $themes
+     */
+    private function removeExistingRTLFiles(array $themes): void
+    {
+        foreach ($themes as $theme) {
+            $files = $this->container->getFilesystemAdapter()->listSampleFiles($theme['directory'], '_rtl.css');
+            $this->filesystem->remove($files);
+        }
+    }
+
+    /**
+     * @throws Exception
+     */
+    protected function runCoreCacheClean(): void
+    {
+        $this->logger->info($this->container->getTranslator()->trans('Cleaning file cache'));
+        $this->container->getCacheCleaner()->cleanFolders();
+        $this->logger->info($this->container->getTranslator()->trans('Running opcache_reset'));
+        $this->container->resetOpcache();
     }
 }

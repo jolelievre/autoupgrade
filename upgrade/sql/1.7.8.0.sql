@@ -1,7 +1,9 @@
 SET SESSION sql_mode='';
 SET NAMES 'utf8mb4';
 
-INSERT IGNORE INTO `PREFIX_hook` (`id_hook`, `name`, `title`, `description`, `position`) VALUES
+DROP TABLE IF EXISTS `PREFIX_order_slip_detail_tax`;
+
+INSERT INTO `PREFIX_hook` (`id_hook`, `name`, `title`, `description`, `position`) VALUES
   (NULL, 'actionPresentCart', 'Cart Presenter', 'This hook is called before a cart is presented', '1'),
   (NULL, 'actionPresentOrder', 'Order footer', 'This hook is called before an order is presented', '1'),
   (NULL, 'actionPresentOrderReturn', 'Order Return Presenter', 'This hook is called before an order return is presented', '1'),
@@ -132,9 +134,9 @@ INSERT IGNORE INTO `PREFIX_hook` (`id_hook`, `name`, `title`, `description`, `po
   (NULL,'actionAfterCreateOrderStateFormHandler','Modify order state identifiable object data after creating it','This hook allows to modify order state identifiable object forms data after it was created','1'),
   (NULL,'actionAfterCreateOrderReturnStateFormHandler','Modify order return state identifiable object data after creating it','This hook allows to modify order return state identifiable object forms data after it was created','1'),
   (NULL,'actionAfterCreateZoneFormHandler','Modify zone identifiable object data after creating it','This hook allows to modify zone identifiable object forms data after it was created','1')
-;
+ON DUPLICATE KEY UPDATE `title` = VALUES(`title`), `description` = VALUES(`description`);
 
-ALTER TABLE `PREFIX_employee` ADD `has_enabled_gravatar` TINYINT UNSIGNED DEFAULT 0 NOT NULL;
+/* PHP:add_column('employee', 'has_enabled_gravatar', 'TINYINT UNSIGNED DEFAULT 0 NOT NULL'); */;
 
 INSERT INTO `PREFIX_configuration` (`name`, `value`, `date_add`, `date_upd`) VALUES
     ('PS_COOKIE_SAMESITE', 'Lax', NOW(), NOW()),
@@ -142,22 +144,21 @@ INSERT INTO `PREFIX_configuration` (`name`, `value`, `date_add`, `date_upd`) VAL
     ('ADDONS_API_MODULE_CHANNEL', 'stable', NOW(), NOW())
 ;
 
-ALTER TABLE `PREFIX_hook` ADD `active` TINYINT(1) UNSIGNED DEFAULT 1 NOT NULL AFTER `description`;
+/* PHP:add_column('hook', 'active', 'TINYINT(1) UNSIGNED DEFAULT 1 NOT NULL AFTER `description`'); */;
 
-ALTER TABLE `PREFIX_orders` ADD COLUMN `note` TEXT AFTER `date_upd`;
+/* PHP:add_column('orders', 'note', 'TEXT AFTER `date_upd``'); */;
 
 ALTER TABLE `PREFIX_currency` CHANGE `numeric_iso_code` `numeric_iso_code` varchar(3) NULL DEFAULT NULL;
 
 UPDATE `PREFIX_configuration` SET `value` = '4' WHERE `name` = 'PS_LOGS_BY_EMAIL' AND `value` = '5';
-ALTER TABLE `PREFIX_log`
-  ADD `id_shop` INT(10) NULL DEFAULT NULL after `object_id`,
-  ADD `id_shop_group` INT(10) NULL DEFAULT NULL after `id_shop`,
-  ADD `id_lang` INT(10) NULL DEFAULT NULL after `id_shop_group`,
-  ADD `in_all_shops` TINYINT(1) unsigned NOT NULL DEFAULT '0'
-;
 
-ALTER TABLE `PREFIX_tab` ADD `wording` VARCHAR(255) DEFAULT NULL AFTER `icon`;
-ALTER TABLE `PREFIX_tab` ADD `wording_domain` VARCHAR(255) DEFAULT NULL AFTER `wording`;
+/* PHP:add_column('log', 'id_shop', 'INT(10) unsigned DEFAULT NULL after `object_id`'); */;
+/* PHP:add_column('log', 'id_shop_group', 'INT(10) unsigned DEFAULT NULL after `id_shop`'); */;
+/* PHP:add_column('log', 'id_lang', 'INT(10) unsigned DEFAULT NULL after `id_shop_group`'); */;
+/* PHP:add_column('log', 'in_all_shops', 'TINYINT(1) unsigned NOT NULL DEFAULT \'0\''); */;
+
+/* PHP:add_column('tab', 'wording', ' VARCHAR(255) DEFAULT NULL AFTER `icon`'); */;
+/* PHP:add_column('tab', 'wording_domain', 'VARCHAR(255) DEFAULT NULL AFTER `wording`'); */;
 
 UPDATE `PREFIX_product` SET `location` = '' WHERE `location` IS NULL;
 ALTER TABLE `PREFIX_product` MODIFY COLUMN `location` VARCHAR(255) NOT NULL DEFAULT '';
@@ -169,9 +170,7 @@ ALTER TABLE `PREFIX_product` MODIFY COLUMN `redirect_type` ENUM(
     '404', '301-product', '302-product', '301-category', '302-category'
 ) NOT NULL DEFAULT '404';
 
-ALTER TABLE  `PREFIX_product` ADD `product_type` ENUM(
-    'standard', 'pack', 'virtual', 'combinations'
-) NOT NULL DEFAULT 'standard';
+/* PHP:add_column('product', 'product_type', 'ENUM(\'standard\', \'pack\', \'virtual\', \'combinations\', \'\') NOT NULL DEFAULT \'\''); */;
 
 /* First set all products to standard type, then update them based on cached columns that identify the type */
 UPDATE `PREFIX_product` SET `product_type` = "standard";
@@ -186,12 +185,12 @@ before Doctrine schema update */
 /* consequently we create the table manually */
 CREATE TABLE IF NOT EXISTS `PREFIX_feature_flag` (
   `id_feature_flag` INT(10) unsigned NOT NULL AUTO_INCREMENT,
-  `name` VARCHAR(191) COLLATE utf8mb4_general_ci NOT NULL,
+  `name` VARCHAR(191) COLLATE utf8mb4_unicode_ci NOT NULL,
   `state` TINYINT(1) NOT NULL DEFAULT '0',
-  `label_wording` VARCHAR(191) COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `label_domain` VARCHAR(255) COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `description_wording` VARCHAR(191) COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
-  `description_domain` VARCHAR(255) COLLATE utf8mb4_general_ci NOT NULL DEFAULT '',
+  `label_wording` VARCHAR(191) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `label_domain` VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `description_wording` VARCHAR(191) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `description_domain` VARCHAR(255) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
   PRIMARY KEY (`id_feature_flag`),
   UNIQUE KEY `UNIQ_91700F175E237E06` (`name`)
 ) ENGINE=ENGINE_TYPE DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -199,3 +198,12 @@ CREATE TABLE IF NOT EXISTS `PREFIX_feature_flag` (
 INSERT INTO `PREFIX_feature_flag` (`name`, `state`, `label_wording`, `label_domain`, `description_wording`, `description_domain`)
 VALUES
 	('product_page_v2', 0, 'Experimental product page', 'Admin.Advparameters.Feature', 'This page benefits from increased performance and includes new features such as a new combination management system. Please note this is a work in progress and some features are not available yet.', 'Admin.Advparameters.Help');
+
+DROP INDEX id_shop ON `PREFIX_shop_url`;
+DROP INDEX full_shop_url ON `PREFIX_shop_url`;
+DROP INDEX full_shop_url_ssl ON `PREFIX_shop_url`;
+ALTER TABLE `PREFIX_shop_url` CHANGE id_shop_url id_shop_url INT AUTO_INCREMENT NOT NULL;
+ALTER TABLE `PREFIX_shop_url` CHANGE id_shop id_shop INT NOT NULL;
+CREATE INDEX IDX_279F19DA274A50A0 ON `PREFIX_shop_url` (id_shop);
+/* PHP:add_column('shop', 'color', 'VARCHAR(50) NOT NULL'); */;
+/* PHP:add_column('shop_group', 'color', 'VARCHAR(50) NOT NULL'); */;

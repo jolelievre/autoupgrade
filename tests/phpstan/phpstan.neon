@@ -1,19 +1,18 @@
+includes:
+	- %currentWorkingDirectory%/tests/vendor/prestashop/php-dev-tools/phpstan/ps-module-extension.neon
+
 parameters:
 	bootstrapFiles:
-		- bootstrap.php
+		- ./forceAutoload.php
 	paths:
 		# From PHPStan 0.12, paths to check are relative to the neon file
 		- ./../../classes
 		- ./../../upgrade/php/deactivate_custom_modules.php
-		- ./../../AdminSelfUpgrade.php
+		- ./../../controllers/admin/AdminSelfUpgradeController.php
 		- ./../../ajax-upgradetab.php
 		- ./../../ajax-upgradetabconfig.php
 		- ./../../autoupgrade.php
-		- ./../../cli-rollback.php
-		- ./../../cli-updateconfig.php
-		- ./../../cli-upgrade.php
-	excludes_analyse:
+	excludePaths:
 		- ./../../classes/Tools14.php
 		- ./../../classes/pclzip.lib.php
-		- ./../../functions.php
-	level: 5
+	level: 6

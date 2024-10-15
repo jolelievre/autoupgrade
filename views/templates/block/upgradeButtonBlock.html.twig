@@ -1,0 +1,141 @@
+<div class="bootstrap" id="upgradeButtonBlock">
+    <div class="panel">
+        <div class="panel-heading">
+            {{ 'Start your Upgrade'|trans({}) }}
+        </div>
+        <div class="blocOneClickUpgrade">
+            {% if isLastVersion %}
+                <p class="alert alert-success">{{ 'Congratulations, you are already using the latest version available!'|trans({}) }}</p>
+            {% endif %}
+            <p>
+                {{ 'Your current PrestaShop version'|trans({}) }}: <strong>{{ currentPsVersion }}</strong>
+            </p>
+            <p>
+                {{ 'Your current PHP version'|trans({}) }}: <strong>{{ phpVersion }}</strong>
+            </p>
+            {% if not isLastVersion %}
+                <p>{{ 'Version available on channel %s:'|trans([channel]) }} <strong>{{ destinationVersion }}</strong></p>
+            {% endif %}
+        </div>
+        <br>
+        {% if showUpgradeButton %}
+            <div>
+                <a href="#" id="upgradeNow"
+                   class="button-autoupgrade upgradestep btn btn-primary">{{ 'Upgrade PrestaShop now!'|trans({}) }}</a>
+                {% if showUpgradeLink %}
+                    <small><a href="{{ upgradeLink }}">{{ 'PrestaShop will be downloaded from %s'|trans([upgradeLink]) }}</a></small>
+                    {% if changelogLink is not empty %}
+                        <p>
+                            <a href="{{ changelogLink }}"
+                               target="_blank">{{ 'Open changelog in a new window'|trans({}) }}</a>
+                        </p>
+                    {% endif %}
+                {% else %}
+                    {{ 'No file will be downloaded (channel %s is used)'|trans([channel]) }}
+                {% endif %}
+            </div>
+            {% if skipActions is not empty %}
+                <div id="skipAction-list" class="alert alert-warning">
+                    <p>{{ 'The following action are automatically replaced'|trans({}) }}</p>
+                    <ul>
+                        {% for old, new in skipActions %}
+                            <li>
+                                {{ '%old% will be replaced by %new%'|trans({'%old%': old, '%new%': new}) }}
+                            </li>
+                        {% endfor %}
+                    </ul>
+                    <p>{{ 'To change this behavior, you need to manually edit your php files'|trans({}) }}</p>
+                </div>
+            {% endif %}
+        {% endif %}
+        <br>
+        <p>
+            {% if showUpgradeButton %}
+                <a class="button button-autoupgrade btn btn-default"
+                   href="index.php?controller=AdminSelfUpgrade&amp;token={{ token }}&amp;refreshCurrentVersion=1">{{ 'Refresh the page'|trans({}) }}</a> -
+            {% else %}
+                <a class="button button-autoupgrade btn btn-primary"
+                   href="index.php?controller=AdminSelfUpgrade&amp;token={{ token }}&amp;refreshCurrentVersion=1">{{ 'Check if a new version is available'|trans({}) }}</a> -
+            {% endif %}
+            <span style="font-style: italic; font-size: 11px;">{% if lastVersionCheck %}
+                    {{ 'Last check: %s'|trans([lastVersionCheck|date('Y-m-d H:i:s')]) }}
+                {% else %}
+                    {{ 'Last check: never'|trans({}) }}
+                {% endif %}
+            </span>
+        </p>
+
+        <!-- advanced configuration -->
+        <div class="row">
+            <div class="pull-right">
+                <p><input type="button" class="button btn btn-warning" name="btn_adv"
+                          value="{{ 'More options (Expert mode)'|trans({}) }}" /></p>
+            </div>
+            <div class="col-xs-12">
+                <p class="alert alert-info" style="display:none;" id="configResult">&nbsp;</p>
+                <div id="advanced" style="margin-top: 30px;">
+                    <div class="panel-heading">
+                        {{ 'Expert mode'|trans({}) }}
+                    </div>
+                    <h4 style="margin-top: 0">{{ 'Please select your channel:'|trans({}) }}</h4>
+                    <p>
+                        {{ 'Channels are offering you different ways to perform an upgrade. You can either upload the new version manually or let the Update assistant module download it for you.'|trans({}) }}
+                        <br>
+                        {{ 'The Alpha, Beta and Private channels give you the ability to upgrade to a non-official or unstable release (for testing purposes only).'|trans({}) }}
+                        <br>
+                        {{ 'By default, you should use the "Minor release" channel which is offering the latest stable version available.'|trans({})|raw }}
+                    </p>
+                    <br>
+                    <label for="channel">{{ 'Channel:'|trans({}) }}</label>
+                    <select name="channel" id="channel">
+                        {% for channelOpt in channelOptions %}
+                            {% set selected = (channel == channelOpt[1]) %}
+                            <option id="{{ channelOpt[0] }}" value="{{ channelOpt[1] }}"
+                                    {% if selected %}class="current" selected{% endif %}>
+                                {% if selected %}* {% endif %}{{ channelOpt[2] }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                    <div id="for-useLocal">
+                        {% if archiveFiles is not empty %}
+                            <label for="archive_prestashop">{{ 'Archive to use:'|trans({}) }} *</label>
+                            <div>
+                                <select id="archive_prestashop" name="archive_prestashop" required>
+                                    <option value="">{{ 'Choose an archive'|trans({}) }}</option>
+                                    {% for file in archiveFiles %}
+                                        {% set fileName = file|replace({(downloadPath): ''}) %}
+                                        <option {% if archiveFileName == fileName %} selected{% endif %}
+                                                value="{{ fileName }}">{{ fileName }}</option>
+                                    {% endfor %}
+                                </select>
+                                <br>
+                                <label for="archive_xml">{{ 'XML file to use:'|trans({}) }} *</label>
+                                <select id="archive_xml" name="archive_xml" required>
+                                    <option value="">{{ 'Choose an XML file'|trans({}) }}</option>
+                                    {% for file in xmlFiles %}
+                                        {% set fileName = file|replace({(downloadPath): ''}) %}
+                                        <option {% if xmlFileName == fileName %} selected{% endif %}
+                                                value="{{ fileName }}">{{ fileName }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        {% else %}
+                            <div class="alert alert-warning">{{ 'No archive found in your admin/autoupgrade/download directory'|trans({}) }}</div>
+                        {% endif %}
+                        <div class="margin-form">
+                            {{ 'Save in the following directory the archive file and XML file of the version you want to upgrade to: %s'|trans(['<b>/admin/autoupgrade/download/</b>'])|raw }}
+                            <br>
+                            {{ 'Click to save once the archive is there.'|trans({}) }}<br>
+                            {{ 'This option will skip the download step.'|trans({}) }}
+                        </div>
+                    </div>
+                    <br>
+                    <p>
+                        <input type="button" class="button btn btn-primary" value="{{ 'Save'|trans({}) }}"
+                               name="submitConf-channel">
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

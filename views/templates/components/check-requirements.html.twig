@@ -1,0 +1,40 @@
+{% if not requirementsOk %}
+  <div class="check-requirements check-requirements--failed">
+    <p class="check-requirements__title h3">
+      {{ "Update requirements"|trans({}) }}
+    </p>
+
+    <p class="check-requirements__message">
+      {{ 'Once all the following conditions are met, you can continue with the update. Read more in the [1]developer documentation[/1].'|trans({
+        '[1]' : '<a class="link" href="' ~ updateAssistantDocs ~'" target="_blank">',
+        '[/1]' : '</a>',
+      })|raw }}
+    </p>
+
+    <div class="check-requirements__list">
+      {# ERROR #}
+      {% for error in errors %}
+        <div class="check-requirements__requirement check-requirements__requirement--error">
+          {{ error }}
+        </div>
+      {% endfor %}
+
+      {# WARNING #}
+      {% for warning in warnings %}
+        <div class="check-requirements__requirement check-requirements__requirement--warning">
+          {{ warning }}
+        </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn btn-primary">
+      <i class="material-icons">refresh</i>
+      {{ 'Check requirements again'|trans({}) }}
+    </button>
+  </div>
+{% else %}
+  <div class="check-requirements check-requirements--success">
+    <div class="alert alert-success">
+      {{ 'The requirements check is complete, you can update your store (to this version of PrestaShop).'|trans({}) }}
+    </div>
+  </div>
+{% endif %}

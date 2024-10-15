@@ -36,6 +36,8 @@ if (function_exists('date_default_timezone_set')) {
  * Set constants & general values used by the autoupgrade.
  *
  * @param string $callerFilePath Path to the caller file. Needed as the two files are not in the same folder
+ *
+ * @return \PrestaShop\Module\AutoUpgrade\UpgradeContainer
  */
 function autoupgrade_init_container($callerFilePath)
 {
@@ -48,7 +50,7 @@ function autoupgrade_init_container($callerFilePath)
 
     // the following test confirm the directory exists
     if (empty($_POST['dir'])) {
-        echo 'No admin directory provided (dir). 1-click upgrade cannot proceed.';
+        echo 'No admin directory provided (dir). Update assistant cannot proceed.';
         exit(1);
     }
 
@@ -63,7 +65,6 @@ function autoupgrade_init_container($callerFilePath)
     }
 
     define('AUTOUPGRADE_MODULE_DIR', _PS_MODULE_DIR_ . 'autoupgrade' . DIRECTORY_SEPARATOR);
-    require_once AUTOUPGRADE_MODULE_DIR . 'functions.php';
     require_once AUTOUPGRADE_MODULE_DIR . 'vendor/autoload.php';
 
     $dir = Tools14::safeOutput(Tools14::getValue('dir'));

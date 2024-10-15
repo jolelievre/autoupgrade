@@ -27,9 +27,13 @@
 
 namespace PrestaShop\Module\AutoUpgrade;
 
+use PrestaShop\Module\AutoUpgrade\Exceptions\ZipActionException;
 use PrestaShop\Module\AutoUpgrade\Log\LoggerInterface;
 use PrestaShop\Module\AutoUpgrade\Parameters\UpgradeConfiguration;
+use PrestaShop\Module\AutoUpgrade\Progress\Backlog;
+use PrestaShop\Module\AutoUpgrade\UpgradeTools\Translator;
 use Symfony\Component\Filesystem\Filesystem;
+use ZipArchive;
 
 class ZipAction
 {
@@ -42,7 +46,14 @@ class ZipAction
      */
     private $configMaxFileSizeAllowed;
 
+    /**
+     * @var LoggerInterface
+     */
     private $logger;
+
+    /**
+     * @var Translator
+     */
     private $translator;
 
     /**
@@ -50,7 +61,7 @@ class ZipAction
      */
     private $prodRootDir;
 
-    public function __construct($translator, LoggerInterface $logger, UpgradeConfiguration $configuration, $prodRootDir)
+    public function __construct(Translator $translator, LoggerInterface $logger, UpgradeConfiguration $configuration, string $prodRootDir)
     {
         $this->translator = $translator;
         $this->logger = $logger;
@@ -63,19 +74,17 @@ class ZipAction
     /**
      * Add files to an archive.
      * Note the number of files added can be limited.
-     *
-     * @var array List of files to add
-     * @var string
      */
-    public function compress(&$filesList, $toFile)
+    public function compress(Backlog $backlog, string $toFile): bool
     {
-        $zip = $this->open($toFile, \ZipArchive::CREATE);
-        if ($zip === false) {
+        try {
+            $zip = $this->open($toFile, ZipArchive::CREATE);
+        } catch (ZipActionException $e) {
             return false;
         }
 
-        for ($i = 0; $i < $this->configMaxNbFilesCompressedInARow && count($filesList); ++$i) {
-            $file = array_pop($filesList);
+        for ($i = 0; $i < $this->configMaxNbFilesCompressedInARow && $backlog->getRemainingTotal(); ++$i) {
+            $file = $backlog->getNext();
 
             $archiveFilename = $this->getFilepathInArchive($file);
             if (!$this->isFileWithinFileSizeLimit($file)) {
@@ -91,8 +100,7 @@ class ZipAction
                     [
                         '%filename%' => $file,
                         '%archive%' => $archiveFilename,
-                    ],
-                    'Modules.Autoupgrade.Admin'
+                    ]
                 ));
 
                 return false;
@@ -102,17 +110,15 @@ class ZipAction
                 '%filename% added to archive. %filescount% files left.',
                 [
                     '%filename%' => $archiveFilename,
-                    '%filescount%' => count($filesList),
-                ],
-                'Modules.Autoupgrade.Admin'
+                    '%filescount%' => $backlog->getRemainingTotal(),
+                ]
             ));
         }
 
         if (!$zip->close()) {
             $this->logger->error($this->translator->trans(
-                'Could not close the Zip file properly. Check you are allowed to write on the disk and there is available space on it.',
-                [],
-                'Modules.Autoupgrade.Admin'
+                'Could not close the Zip file: %toFile% properly. Check you are allowed to write on the disk and there is available space on it.',
+                ['%toFile%' => $toFile]
             ));
 
             return false;
@@ -127,10 +133,10 @@ class ZipAction
      * @return bool success
      *              we need a copy of it to be able to restore without keeping Tools and Autoload stuff
      */
-    public function extract($from_file, $to_dir)
+    public function extract(string $from_file, string $to_dir): bool
     {
         if (!is_file($from_file)) {
-            $this->logger->error($this->translator->trans('%s is not a file', [$from_file], 'Modules.Autoupgrade.Admin'));
+            $this->logger->error($this->translator->trans('%s is not a file', [$from_file]));
 
             return false;
         }
@@ -138,15 +144,16 @@ class ZipAction
         if (!file_exists($to_dir)) {
             // ToDo: Use Filesystem from Symfony
             if (!mkdir($to_dir)) {
-                $this->logger->error($this->translator->trans('Unable to create directory %s.', [$to_dir], 'Modules.Autoupgrade.Admin'));
+                $this->logger->error($this->translator->trans('Unable to create directory %s.', [$to_dir]));
 
                 return false;
             }
             chmod($to_dir, 0775);
         }
 
-        $zip = $this->open($from_file);
-        if ($zip === false) {
+        try {
+            $zip = $this->open($from_file);
+        } catch (ZipActionException $e) {
             return false;
         }
 
@@ -155,8 +162,7 @@ class ZipAction
                 $this->logger->error(
                     $this->translator->trans(
                         'Could not extract %file% from backup, the destination might not be writable.',
-                        ['%file%' => $zip->statIndex($i)['name']],
-                        'Modules.Autoupgrade.Admin'
+                        ['%file%' => $zip->statIndex($i)['name']]
                     )
                 );
                 $zip->close();
@@ -166,7 +172,7 @@ class ZipAction
         }
 
         $zip->close();
-        $this->logger->debug($this->translator->trans('Content of archive %zip% is extracted', ['%zip%' => $from_file], 'Modules.Autoupgrade.Admin'));
+        $this->logger->debug($this->translator->trans('Content of archive %zip% is extracted', ['%zip%' => $from_file]));
 
         return true;
     }
@@ -174,19 +180,20 @@ class ZipAction
     /**
      * Lists the files present in the given archive
      *
-     * @var string Path to the file
+     * @param string $zipFile Path to the file
      *
-     * @return array
+     * @return string[]
      */
-    public function listContent($zipfile)
+    public function listContent(string $zipFile): array
     {
-        if (!file_exists($zipfile)) {
+        if (!file_exists($zipFile)) {
             return [];
         }
 
-        $zip = $this->open($zipfile);
-        if ($zip === false) {
-            $this->logger->error($this->translator->trans('[ERROR] Unable to list archived files', [], 'Modules.Autoupgrade.Admin'));
+        try {
+            $zip = $this->open($zipFile);
+        } catch (ZipActionException $e) {
+            $this->logger->error($this->translator->trans('[ERROR] Unable to list archived files'));
 
             return [];
         }
@@ -202,11 +209,11 @@ class ZipAction
     /**
      * Get the path of a file from the archive root
      *
-     * @var string Path of the file on the filesystem
+     * @param string $filepath Path of the file on the filesystem
      *
      * @return string Path of the file in the backup archive
      */
-    private function getFilepathInArchive($filepath)
+    private function getFilepathInArchive(string $filepath): string
     {
         return ltrim(str_replace($this->prodRootDir, '', $filepath), DIRECTORY_SEPARATOR);
     }
@@ -214,11 +221,11 @@ class ZipAction
     /**
      * Checks a file size matches the given limits
      *
-     * @var string Path to a file
+     * @param string $filepath Path to a file
      *
      * @return bool Size is inside the maximum limit
      */
-    private function isFileWithinFileSizeLimit($filepath)
+    private function isFileWithinFileSizeLimit(string $filepath): bool
     {
         $size = filesize($filepath);
         $pass = ($size < $this->configMaxFileSizeAllowed);
@@ -228,8 +235,7 @@ class ZipAction
                 [
                     '%filename%' => $this->getFilepathInArchive($filepath),
                     '%filesize%' => $size,
-                ],
-                'Modules.Autoupgrade.Admin'
+                ]
             ));
         }
 
@@ -239,20 +245,34 @@ class ZipAction
     /**
      * Open an archive
      *
-     * @var string Path to the archive
-     * @var int ZipArchive flags
+     * @param string $zipFile Path to the archive
+     * @param int|null $flags ZipArchive flags
      *
-     * @return false|\ZipArchive
+     * @throws ZipActionException
      */
-    private function open($zipFile, $flags = null)
+    public function open(string $zipFile, int $flags = null): ZipArchive
     {
-        $zip = new \ZipArchive();
+        $zip = new ZipArchive();
+        if (null === $flags) {
+            $flags = 0;
+        }
         if ($zip->open($zipFile, $flags) !== true || empty($zip->filename)) {
-            $this->logger->error($this->translator->trans('Unable to open zipFile %s', [$zipFile], 'Modules.Autoupgrade.Admin'));
-
-            return false;
+            $this->logger->error($this->translator->trans('Unable to open zipFile %s', [$zipFile]));
+            throw new ZipActionException('Unable to open zipFile ' . $zipFile);
         }
 
         return $zip;
+    }
+
+    /**
+     * @throws ZipActionException
+     */
+    public function extractFileFromArchive(ZipArchive $zip, string $fileName): string
+    {
+        $fileIndex = $zip->locateName($fileName);
+        if ($fileIndex !== false) {
+            return $zip->getFromIndex($fileIndex);
+        }
+        throw new ZipActionException("Unable to find $fileName file");
     }
 }
